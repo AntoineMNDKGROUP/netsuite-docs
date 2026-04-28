@@ -26,6 +26,11 @@ on:
         required: false
         default: false
         type: boolean
+      with_fields:
+        description: "Activer l'extraction des custom fields (faux positifs récurrents — désactivé par défaut)"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   sync:
@@ -87,17 +92,24 @@ jobs:
           if [ "${{ github.event.inputs.with_ai_docs }}" = "true" ]; then
             AI_DOCS_FLAG=""
           fi
-          echo "▶️  Lancement: mode=$MODE saved_searches_all=$SS_ALL ai_docs_flag=$AI_DOCS_FLAG"
-          # Note: --ai-docs est désactivé par défaut au nightly car rate-limité
-          # côté Anthropic (peut prendre des heures sur les 1300+ scripts sans doc).
-          # Activer manuellement via le bouton "Run workflow" en cochant
-          # "with_ai_docs" si on veut faire un batch de génération de docs.
+          FIELDS_FLAG="--no-fields"
+          if [ "${{ github.event.inputs.with_fields }}" = "true" ]; then
+            FIELDS_FLAG=""
+          fi
+          echo "▶️  Lancement: mode=$MODE ss_all=$SS_ALL ai_docs=$AI_DOCS_FLAG fields=$FIELDS_FLAG"
+          # Notes:
+          # --ai-docs : désactivé par défaut au nightly (rate-limité Anthropic,
+          #   peut prendre des heures). Activer via with_ai_docs=true.
+          # --fields  : désactivé par défaut au nightly. NetSuite fait drift le
+          #   payload des custom_fields à chaque run (~1200 faux positifs).
+          #   À lancer manuellement via with_fields=true quand on veut un audit.
           # --update-docs reste actif : il ne tourne que sur les fichiers modifiés
           # (volume faible) et c'est le coeur du dashboard d'updates.
           python -m src.main extract \
             --mode "$MODE" \
             --triggered-by "github-actions" \
             $AI_DOCS_FLAG \
+            $FIELDS_FLAG \
             $SS_ALL
 
       - name: Summary of changes (last 24h)
