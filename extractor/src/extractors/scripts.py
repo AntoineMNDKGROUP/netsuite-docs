@@ -128,11 +128,19 @@ def extract_scripts(
     if modified_since is not None:
         ts_literal = _format_since_for_suiteql(modified_since)
         logger.info("Fetching scripts modified since %s...", modified_since)
-        # Ajoute un WHERE à chaque variante de query
-        variants = [
-            v.rstrip().rstrip(";") + f"\nWHERE s.lastmodifieddate >= {ts_literal}\n"
-            for v in SCRIPTS_QUERY_VARIANTS
-        ]
+        # Le nom du champ "date de dernière modif" varie selon les comptes
+        # NetSuite. On essaie plusieurs candidats en cascade ; si tous échouent,
+        # on retombe sur la query SANS filtre (full scan, bulk_sync skipera
+        # quand même via le hash).
+        date_candidates = ["datemodified", "lastmodified", "lastmodifieddate", "lastmoddate"]
+        variants = []
+        for date_col in date_candidates:
+            for v in SCRIPTS_QUERY_VARIANTS:
+                variants.append(
+                    v.rstrip().rstrip(";") + f"\nWHERE s.{date_col} >= {ts_literal}\n"
+                )
+        # Fallback: les variantes sans filtre (au cas où aucun nom ne marche)
+        variants.extend(SCRIPTS_QUERY_VARIANTS)
     else:
         logger.info("Fetching scripts from NetSuite (limit=%s)...", limit or "no limit")
         variants = SCRIPTS_QUERY_VARIANTS
@@ -211,10 +219,15 @@ def extract_script_deployments(
     if modified_since is not None:
         ts_literal = _format_since_for_suiteql(modified_since)
         logger.info("Fetching script deployments modified since %s...", modified_since)
-        variants = [
-            v.rstrip().rstrip(";") + f"\nWHERE d.lastmodifieddate >= {ts_literal}\n"
-            for v in DEPLOYMENTS_QUERY_VARIANTS
-        ]
+        # Idem scripts : on essaie plusieurs noms, fallback sans filtre.
+        date_candidates = ["datemodified", "lastmodified", "lastmodifieddate", "lastmoddate"]
+        variants = []
+        for date_col in date_candidates:
+            for v in DEPLOYMENTS_QUERY_VARIANTS:
+                variants.append(
+                    v.rstrip().rstrip(";") + f"\nWHERE d.{date_col} >= {ts_literal}\n"
+                )
+        variants.extend(DEPLOYMENTS_QUERY_VARIANTS)
     else:
         logger.info("Fetching script deployments (limit=%s)...", limit or "no limit")
         variants = DEPLOYMENTS_QUERY_VARIANTS
