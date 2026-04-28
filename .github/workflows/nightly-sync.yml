@@ -21,6 +21,11 @@ on:
         required: false
         default: false
         type: boolean
+      with_ai_docs:
+        description: "Activer la génération de doc IA pour scripts sans doc (long, rate-limité Anthropic)"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   sync:
@@ -78,10 +83,21 @@ jobs:
           if [ "${{ github.event.inputs.saved_searches_all }}" = "true" ]; then
             SS_ALL="--saved-searches-all"
           fi
-          echo "▶️  Lancement: mode=$MODE saved_searches_all=$SS_ALL"
+          AI_DOCS_FLAG="--no-ai-docs"
+          if [ "${{ github.event.inputs.with_ai_docs }}" = "true" ]; then
+            AI_DOCS_FLAG=""
+          fi
+          echo "▶️  Lancement: mode=$MODE saved_searches_all=$SS_ALL ai_docs_flag=$AI_DOCS_FLAG"
+          # Note: --ai-docs est désactivé par défaut au nightly car rate-limité
+          # côté Anthropic (peut prendre des heures sur les 1300+ scripts sans doc).
+          # Activer manuellement via le bouton "Run workflow" en cochant
+          # "with_ai_docs" si on veut faire un batch de génération de docs.
+          # --update-docs reste actif : il ne tourne que sur les fichiers modifiés
+          # (volume faible) et c'est le coeur du dashboard d'updates.
           python -m src.main extract \
             --mode "$MODE" \
             --triggered-by "github-actions" \
+            $AI_DOCS_FLAG \
             $SS_ALL
 
       - name: Summary of changes (last 24h)
