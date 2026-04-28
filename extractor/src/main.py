@@ -73,6 +73,23 @@ def cmd_extract(args: argparse.Namespace) -> int:
     errors: list[str] = []
     limit = args.limit
 
+    # En mode incremental, on ne refetch que ce qui a été modifié depuis le
+    # dernier run réussi. Le filtre est appliqué INDÉPENDAMMENT à 3 niveaux :
+    #   1. script.lastmodifieddate     → record script (rename, status…)
+    #   2. scriptdeployment.lastmodifieddate → audience, log_level…
+    #   3. file.lastmodifieddate       → vraie modif du source code
+    # En mode full, modified_since=None → on tire tout (et on détecte les
+    # suppressions).
+    modified_since = None
+    if args.mode == "incremental":
+        modified_since = store.get_last_successful_run_at()
+        if modified_since is None:
+            logger.info(
+                "Mode incremental mais aucun run réussi précédent : on bascule en full extract"
+            )
+        else:
+            logger.info("Mode incremental : modifs depuis %s", modified_since.isoformat())
+
     def safe(name: str, fn, *fn_args, **fn_kwargs):
         try:
             stats[name] = fn(*fn_args, **fn_kwargs)
@@ -82,11 +99,14 @@ def cmd_extract(args: argparse.Namespace) -> int:
             stats[name] = {"error": str(e)}
 
     if args.scripts:
-        safe("scripts", extract_scripts, suiteql, store, run_id, limit=limit)
-        safe("script_deployments", extract_script_deployments, suiteql, store, run_id, limit=limit)
+        safe("scripts", extract_scripts, suiteql, store, run_id,
+             limit=limit, modified_since=modified_since)
+        safe("script_deployments", extract_script_deployments, suiteql, store, run_id,
+             limit=limit, modified_since=modified_since)
 
     if args.script_files:
-        safe("script_files", extract_script_files, file_client, store, run_id, limit=limit)
+        safe("script_files", extract_script_files, file_client, store, run_id,
+             limit=limit, modified_since=modified_since, suiteql=suiteql)
 
     if args.fields:
         safe("custom_fields", extract_custom_fields, suiteql, metadata_client, store, run_id, limit=limit)

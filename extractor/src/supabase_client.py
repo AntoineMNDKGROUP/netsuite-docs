@@ -60,6 +60,45 @@ class SupabaseStore:
         )
 
     # ---- Sync runs ----------------------------------------------------------
+    def get_last_successful_run_at(self, *, exclude_modes: tuple[str, ...] = ("ping",)) -> datetime | None:
+        """Renvoie le `started_at` du dernier run réussi.
+
+        Utilisé en mode incremental pour ne re-fetcher que les entités
+        modifiées depuis cette date côté NetSuite.
+
+        Exclut par défaut le mode 'ping' (qui est juste un test de connexion).
+
+        Returns:
+            datetime UTC du dernier run réussi, ou None si aucun.
+        """
+        query = (
+            self.client.table("sync_runs")
+            .select("started_at")
+            .eq("status", "success")
+            .order("started_at", desc=True)
+            .limit(50)  # on en prend plusieurs pour pouvoir filtrer ensuite
+        )
+        res = query.execute()
+        rows = res.data or []
+        for row in rows:
+            # on parse pas seulement on filtre les modes exclus
+            mode = row.get("mode")
+            if mode in exclude_modes:
+                continue
+            ts = row.get("started_at")
+            if not ts:
+                continue
+            # Postgres timestamptz arrive en string ISO. Parse en datetime aware.
+            try:
+                # Format Supabase : "2026-04-28T13:33:03.151499+00:00"
+                if isinstance(ts, str):
+                    ts = ts.replace("Z", "+00:00")
+                    return datetime.fromisoformat(ts)
+                return ts
+            except Exception:
+                continue
+        return None
+
     def start_sync_run(self, mode: str, triggered_by: str = "manual") -> str:
         res = self.client.table("sync_runs").insert({
             "mode": mode,

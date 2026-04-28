@@ -131,13 +131,19 @@ def extract_script_files(
     *,
     limit: int | None = None,
     only_changed: bool = False,
+    modified_since=None,
+    suiteql=None,
 ) -> dict[str, int]:
-    """Télécharge le contenu de tous les scripts ayant un scriptfile.
+    """Télécharge le contenu des scripts ayant un scriptfile.
 
     Args:
-        only_changed: si True, ne télécharge que les scripts dont la dernière
-            modification (côté NetSuite) est plus récente que le `last_seen_at`
-            de notre dernière capture. (Optimisation incrémentale future.)
+        modified_since: si fourni (datetime), ne traite QUE les fichiers dont
+            le `file.lastmodifieddate` côté NetSuite est >= modified_since.
+            Indépendant de `script.last_modified` : on peut updater le source
+            sans toucher au record script. Nécessite `suiteql` pour faire la
+            query NetSuite.
+        suiteql: client SuiteQL (requis si modified_since est fourni).
+        only_changed: legacy, équivalent à modified_since='last_seen_at'.
     """
     # 1. Récupère la liste de TOUS les scripts avec script_file (paginé pour passer la limite de 1000)
     raw_candidates: list[dict[str, Any]] = []
@@ -158,6 +164,66 @@ def extract_script_files(
             break
         page_idx += 1
     logger.info("Scripts avec script_file: %s en base (paginé)", len(raw_candidates))
+
+    # 1bis. Si modified_since fourni : query SuiteQL pour récupérer les file IDs
+    #       modifiés côté NetSuite depuis cette date, puis intersection avec
+    #       les script_files connus. C'est le filtre clé pour ne fetcher que
+    #       les vraies modifs de code.
+    if modified_since is not None:
+        if suiteql is None:
+            logger.warning(
+                "modified_since fourni mais suiteql=None, on ignore le filtre"
+            )
+        else:
+            from datetime import datetime, timezone
+            ts = modified_since
+            if isinstance(ts, str):
+                ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            ts_str = ts.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            ts_literal = f"TO_TIMESTAMP('{ts_str}', 'YYYY-MM-DD HH24:MI:SS')"
+
+            logger.info(
+                "Filtre incrémental : files dont lastmodifieddate >= %s",
+                ts_str,
+            )
+            # On essaie 2 variantes (selon ce que ce compte expose)
+            file_query_variants = [
+                f"SELECT id, lastmodifieddate FROM file WHERE lastmodifieddate >= {ts_literal}",
+                f"SELECT id, lastmodified AS lastmodifieddate FROM file WHERE lastmodified >= {ts_literal}",
+            ]
+            modified_file_ids: set[str] | None = None
+            for q in file_query_variants:
+                try:
+                    rows = suiteql.run(q)
+                    modified_file_ids = {str(r["id"]) for r in rows if r.get("id") is not None}
+                    logger.info(
+                        "  → %d fichiers modifiés côté NS depuis %s",
+                        len(modified_file_ids), ts_str,
+                    )
+                    break
+                except Exception as e:
+                    logger.warning("File modifications query variant failed: %s", e)
+                    continue
+
+            if modified_file_ids is None:
+                logger.warning(
+                    "Impossible de récupérer la liste des files modifiés via SuiteQL — "
+                    "on télécharge tous les candidats (fallback)."
+                )
+            else:
+                # Intersection : on ne garde que les candidats dont script_file
+                # est dans la liste des files modifiés
+                before_count = len(raw_candidates)
+                raw_candidates = [
+                    c for c in raw_candidates
+                    if str(c["script_file"]) in modified_file_ids
+                ]
+                logger.info(
+                    "Filtre incrémental : %d → %d candidats (gardés ceux dont le file a été modifié)",
+                    before_count, len(raw_candidates),
+                )
 
     # 2. Charger les SHA + le download_status connus
     existing_sha: dict[str, str] = {}
