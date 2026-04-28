@@ -1,0 +1,51 @@
+# Environnement
+.env
+.env.local
+.env.*.local
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+.next/
+out/
+dist/
+build/
+.vercel/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Données extraites locales
+extractor/data/
+*.csv
+*.json
+!**/package.json
+!**/tsconfig.json
+!**/.eslintrc.json
+
+# Secrets / credentials
+*.pem
+*.key
+secrets/

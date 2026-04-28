@@ -1,0 +1,120 @@
+name: Nightly NetSuite sync
+
+# Cron tous les soirs à 22h00 UTC = 23h00 Paris (hiver) / 00h00 Paris (été)
+# Tu peux ajuster l'heure si besoin. Le format est UTC.
+on:
+  schedule:
+    - cron: '0 22 * * *'
+  # Permet de lancer manuellement depuis l'onglet Actions
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Mode d'extraction (full ou incremental)"
+        required: false
+        default: 'incremental'
+        type: choice
+        options:
+          - incremental
+          - full
+      saved_searches_all:
+        description: "Extraire toutes les SS (incl. bundles) — long ~1h30"
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  sync:
+    name: Run extractor
+    runs-on: ubuntu-latest
+    # Garde-fou : un run ne doit pas dépasser 4h, sinon on kill (probable boucle)
+    timeout-minutes: 240
+
+    # Tous les secrets sont configurés dans GitHub → Settings → Secrets and
+    # variables → Actions → New repository secret. Voir le README pour la liste.
+    env:
+      NS_ACCOUNT_ID: ${{ secrets.NS_ACCOUNT_ID }}
+      NS_CONSUMER_KEY: ${{ secrets.NS_CONSUMER_KEY }}
+      NS_CONSUMER_SECRET: ${{ secrets.NS_CONSUMER_SECRET }}
+      NS_TOKEN_ID: ${{ secrets.NS_TOKEN_ID }}
+      NS_TOKEN_SECRET: ${{ secrets.NS_TOKEN_SECRET }}
+      NS_FILE_READER_SCRIPT_ID: ${{ secrets.NS_FILE_READER_SCRIPT_ID }}
+      NS_FILE_READER_DEPLOY_ID: ${{ secrets.NS_FILE_READER_DEPLOY_ID }}
+      NS_SEARCH_READER_SCRIPT_ID: ${{ secrets.NS_SEARCH_READER_SCRIPT_ID }}
+      NS_SEARCH_READER_DEPLOY_ID: ${{ secrets.NS_SEARCH_READER_DEPLOY_ID }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ANTHROPIC_MODEL: ${{ secrets.ANTHROPIC_MODEL || 'claude-sonnet-4-6' }}
+      ANTHROPIC_RPM: ${{ secrets.ANTHROPIC_RPM || '50' }}
+      LOG_LEVEL: INFO
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'extractor/requirements.txt'
+
+      - name: Install dependencies
+        run: |
+          cd extractor
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Ping NetSuite + Supabase
+        run: |
+          cd extractor
+          python -m src.main ping
+
+      - name: Run nightly sync
+        run: |
+          cd extractor
+          MODE="${{ github.event.inputs.mode || 'incremental' }}"
+          SS_ALL=""
+          if [ "${{ github.event.inputs.saved_searches_all }}" = "true" ]; then
+            SS_ALL="--saved-searches-all"
+          fi
+          echo "▶️  Lancement: mode=$MODE saved_searches_all=$SS_ALL"
+          python -m src.main extract \
+            --mode "$MODE" \
+            --triggered-by "github-actions" \
+            $SS_ALL
+
+      - name: Summary of changes (last 24h)
+        if: always()
+        run: |
+          cd extractor
+          python - <<'PY'
+          import os
+          from datetime import datetime, timedelta, timezone
+          from supabase import create_client
+          c = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_ROLE_KEY"])
+          since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+          # Stats par entity_type / kind sur les 24 dernières heures
+          res = (
+              c.table("changes")
+              .select("entity_type,kind", count="exact")
+              .gte("changed_at", since)
+              .execute()
+          )
+          rows = res.data or []
+          counts = {}
+          for r in rows:
+              key = (r["entity_type"], r["kind"])
+              counts[key] = counts.get(key, 0) + 1
+          print(f"=== Changes des 24h (total: {len(rows)}) ===")
+          for (et, k), n in sorted(counts.items(), key=lambda x: -x[1]):
+              print(f"  {et:24s} {k:10s} : {n}")
+          # Update docs IA générées
+          res2 = (
+              c.table("script_update_docs")
+              .select("id", count="exact")
+              .gte("detected_at", since)
+              .execute()
+          )
+          print(f"=== Script update docs IA générées (24h) : {res2.count or 0}")
+          PY
