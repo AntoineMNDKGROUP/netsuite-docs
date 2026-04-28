@@ -29,10 +29,11 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 WORKFLOWS_QUERY_VARIANTS = [
-    # V1 : avec BUILTIN.DF pour le owner_name
+    # V1 : avec internalid (pas `id`) et datemodified (pas `lastmodified`),
+    #      conventions courantes NetSuite. Avec BUILTIN.DF pour owner_name.
     """
     SELECT
-        w.id              AS ns_internal_id,
+        w.internalid      AS ns_internal_id,
         w.scriptid        AS workflow_id,
         w.name            AS name,
         w.recordtype      AS record_type,
@@ -42,13 +43,13 @@ WORKFLOWS_QUERY_VARIANTS = [
         w.owner           AS owner,
         BUILTIN.DF(w.owner) AS owner_name,
         w.datecreated     AS date_created,
-        w.lastmodified    AS last_modified
+        w.datemodified    AS last_modified
     FROM workflow w
     """,
-    # V2 : sans BUILTIN.DF
+    # V2 : sans BUILTIN.DF (cas où la fonction n'est pas exposée)
     """
     SELECT
-        w.id              AS ns_internal_id,
+        w.internalid      AS ns_internal_id,
         w.scriptid        AS workflow_id,
         w.name            AS name,
         w.recordtype      AS record_type,
@@ -57,17 +58,24 @@ WORKFLOWS_QUERY_VARIANTS = [
         w.description     AS description,
         w.owner           AS owner,
         w.datecreated     AS date_created,
-        w.lastmodified    AS last_modified
+        w.datemodified    AS last_modified
     FROM workflow w
     """,
-    # V3 : très minimal (cas où certaines colonnes n'existent pas sur ce compte)
+    # V3 : minimal — juste les champs strictement essentiels
     """
     SELECT
-        w.id              AS ns_internal_id,
-        w.scriptid        AS workflow_id,
+        w.internalid      AS ns_internal_id,
         w.name            AS name,
         w.recordtype      AS record_type,
         w.isinactive      AS is_inactive
+    FROM workflow w
+    """,
+    # V4 : ultra minimal — diagnostic. Si ça passe c'est que la table existe
+    # mais aucune des colonnes habituelles n'a le bon nom.
+    """
+    SELECT
+        w.internalid AS ns_internal_id,
+        w.name AS name
     FROM workflow w
     """,
 ]
@@ -116,7 +124,7 @@ def _try_variants(
         if limit:
             sql = sql.rstrip(";") + f"\nFETCH FIRST {int(limit)} ROWS ONLY"
         try:
-            rows = suiteql.run(sql)
+            rows = suiteql.query_all(sql)
             logger.info("workflows query variant %d → OK (%d rows)", i, len(rows))
             return rows
         except (requests.HTTPError, RuntimeError) as e:

@@ -196,7 +196,7 @@ def extract_script_files(
             modified_file_ids: set[str] | None = None
             for q in file_query_variants:
                 try:
-                    rows = suiteql.run(q)
+                    rows = suiteql.query_all(q)
                     modified_file_ids = {str(r["id"]) for r in rows if r.get("id") is not None}
                     logger.info(
                         "  → %d fichiers modifiés côté NS depuis %s",
