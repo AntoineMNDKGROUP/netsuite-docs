@@ -138,6 +138,7 @@ def cmd_extract(args: argparse.Namespace) -> int:
                 limit=limit,
                 only_ndk=not args.saved_searches_all,
                 force=args.saved_searches_force,
+                modified_since=modified_since,
             )
 
     if args.workflows:

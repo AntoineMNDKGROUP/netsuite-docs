@@ -32,9 +32,28 @@ define(['N/search', 'N/runtime', 'N/error'], function (search, runtime, error) {
     /*  list                                                                    */
     /* ------------------------------------------------------------------------ */
 
-    function listSavedSearches(offset, limit) {
+    function _buildLastmodFilter(sinceStr) {
+        // Filtre robuste sur datemodified via formula numeric — fonctionne quelque
+        // soit la locale du compte. Compare la datemodified de la SS au literal
+        // TO_TIMESTAMP(sinceStr, 'YYYY-MM-DD HH24:MI:SS').
+        // sinceStr doit être au format 'YYYY-MM-DD HH:MM:SS' (UTC).
+        // Échappe les apostrophes dans la string (paranoïa).
+        var safe = String(sinceStr).replace(/'/g, "''");
+        return {
+            name: 'formulanumeric',
+            operator: 'greaterthanorequalto',
+            formula: "CASE WHEN {datemodified} >= TO_TIMESTAMP('"
+                + safe + "', 'YYYY-MM-DD HH24:MI:SS') THEN 1 ELSE 0 END",
+            values: ['1']
+        };
+    }
+
+    function listSavedSearches(offset, limit, since) {
         // Le pseudo-record `savedsearch` permet de lister les SS via une SS classique.
-        // On filtre `isinactive=F` par défaut pour ne pas remonter les SS désactivées.
+        // On combine 2 filtres :
+        //   - inclusion explicite des actives ET inactives (NetSuite filtre les
+        //     inactives par défaut sur ce record type)
+        //   - si `since` est fourni : datemodified >= since (mode incremental)
         // NB: les colonnes `descr` (description) et `ispublic` ne sont pas exposées
         // sur le record type `savedsearch` dans ce compte. On reste sur le set
         // minimum de colonnes confirmées valides. `is_public` est récupéré via
@@ -44,14 +63,17 @@ define(['N/search', 'N/runtime', 'N/error'], function (search, runtime, error) {
         // ce record type (comme dans l'UI Lists > Saved Searches qui a un toggle
         // "Show Inactives" décoché par défaut). On force l'inclusion explicite
         // via un OR qui matche les deux états.
+        var filters = [
+            [['isinactive', 'is', 'F'], 'OR', ['isinactive', 'is', 'T']]
+        ];
+        if (since) {
+            filters.push('AND');
+            filters.push([_buildLastmodFilter(since)]);
+        }
+
         var ssSearch = search.create({
             type: search.Type.SAVED_SEARCH,
-            filters: [
-                [
-                    ['isinactive', 'is', 'F'], 'OR',
-                    ['isinactive', 'is', 'T']
-                ]
-            ],
+            filters: filters,
             columns: [
                 search.createColumn({ name: 'internalid' }),
                 search.createColumn({ name: 'id' }),
@@ -230,7 +252,8 @@ define(['N/search', 'N/runtime', 'N/error'], function (search, runtime, error) {
             if (action === 'list') {
                 var offset = parseInt((context && context.offset) || '0', 10);
                 var limit = parseInt((context && context.limit) || '1000', 10);
-                payload = listSavedSearches(offset, limit);
+                var since = (context && context.since) ? String(context.since) : null;
+                payload = listSavedSearches(offset, limit, since);
             } else if (action === 'get') {
                 if (!context || !context.id) {
                     payload = { error: 'Missing required parameter: id', action: 'get' };

@@ -98,25 +98,35 @@ class SavedSearchClient:
     # Public API
     # ----------------------------------------------------------------------
 
-    def list_page(self, offset: int = 0, limit: int = 1000) -> dict[str, Any]:
+    def list_page(
+        self,
+        offset: int = 0,
+        limit: int = 1000,
+        since: str | None = None,
+    ) -> dict[str, Any]:
         """Récupère une page de saved searches.
 
-        Returns:
-            dict avec {total, offset, limit, returned, items: [...]}
+        Args:
+            since: si fourni (string ISO 'YYYY-MM-DD HH:MM:SS' UTC), le RESTlet
+                filtre côté NetSuite par datemodified >= since (mode incremental).
         """
-        return self._call({"action": "list", "offset": str(offset), "limit": str(limit)})
+        params = {"action": "list", "offset": str(offset), "limit": str(limit)}
+        if since:
+            params["since"] = since
+        return self._call(params)
 
-    def list_all(self) -> list[dict[str, Any]]:
+    def list_all(self, since: str | None = None) -> list[dict[str, Any]]:
         """Itère sur toutes les pages et retourne la liste complète des SS.
 
-        Le RESTlet pagine en interne par 1000 et expose `total` = nb total. On
-        ré-appelle jusqu'à avoir tout récupéré.
+        Args:
+            since: voir list_page. Si fourni, le RESTlet ne renvoie que les SS
+                dont datemodified >= since.
         """
         page_size = 1000
         offset = 0
         all_items: list[dict[str, Any]] = []
         while True:
-            page = self.list_page(offset=offset, limit=page_size)
+            page = self.list_page(offset=offset, limit=page_size, since=since)
             items = page.get("items", []) or []
             all_items.extend(items)
             total = int(page.get("total", 0))

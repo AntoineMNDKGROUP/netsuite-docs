@@ -117,6 +117,7 @@ def extract_saved_searches(
     only_ndk: bool = True,
     force: bool = False,
     list_only: bool = False,
+    modified_since=None,
 ) -> dict[str, int]:
     """Extrait et synchronise les saved searches.
 
@@ -147,8 +148,23 @@ def extract_saved_searches(
     }
 
     # 1. Lister toutes les SS accessibles
-    logger.info("Listing toutes les saved searches via RESTlet...")
-    all_items = client.list_all()
+    #    En mode incremental, le RESTlet filtre côté NetSuite via formula
+    #    datemodified >= since → on ne reçoit que les SS modifiées depuis le
+    #    dernier run. Énorme gain de perf (passe de 9 800 SS listées à
+    #    typiquement <50/jour).
+    since_str: str | None = None
+    if modified_since is not None:
+        ts = modified_since
+        if isinstance(ts, str):
+            ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        since_str = ts.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        logger.info("Listing saved searches modifiées depuis %s (mode incremental)...", since_str)
+    else:
+        logger.info("Listing toutes les saved searches via RESTlet...")
+
+    all_items = client.list_all(since=since_str)
     stats["seen"] = len(all_items)
     logger.info("  %d saved searches accessibles", stats["seen"])
 
