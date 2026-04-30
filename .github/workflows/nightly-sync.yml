@@ -110,7 +110,11 @@ jobs:
             --triggered-by "github-actions" \
             $AI_DOCS_FLAG \
             $FIELDS_FLAG \
-            $SS_ALL
+            $SS_ALL \
+            --no-saved-searches \
+            --no-workflows \
+            --no-custom-records \
+            --no-embeddings
 
       - name: Summary of changes (last 24h)
         if: always()

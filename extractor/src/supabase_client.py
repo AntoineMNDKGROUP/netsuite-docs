@@ -207,6 +207,7 @@ class SupabaseStore:
                 "payload": r,
                 "content_hash": new_hash,
                 "sync_run_id": run_id,
+                "captured_at": now_iso,
             })
             label = next((r.get(k) for k in label_keys if r.get(k)), None)
             prev_payload = existing.get("payload") if existing else None
@@ -221,8 +222,15 @@ class SupabaseStore:
             })
 
         # 5. Inserts batch (snapshots + changes)
+        # On utilise upsert avec on_conflict sur la contrainte uq_snapshots_dedup
+        # pour gérer les rollbacks (un fichier qui repasse par un hash déjà vu).
+        # Dans ce cas, on rafraîchit juste captured_at + sync_run_id pour que
+        # le snapshot existant redevienne "le plus récent".
         for chunk in _chunked(new_snapshots, CHUNK_SIZE):
-            self.client.table("snapshots").insert(chunk).execute()
+            self.client.table("snapshots").upsert(
+                chunk,
+                on_conflict="entity_type,ns_internal_id,content_hash",
+            ).execute()
         for chunk in _chunked(new_changes, CHUNK_SIZE):
             self.client.table("changes").insert(chunk).execute()
 
