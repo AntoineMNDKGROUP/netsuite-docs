@@ -113,8 +113,7 @@ jobs:
             $SS_ALL \
             --no-saved-searches \
             --no-workflows \
-            --no-custom-records \
-            --no-embeddings
+            --no-custom-records
 
       - name: Summary of changes (last 24h)
         if: always()
