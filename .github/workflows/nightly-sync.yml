@@ -1,10 +1,10 @@
 name: Nightly NetSuite sync
 
-# Cron tous les soirs à 22h00 UTC = 23h00 Paris (hiver) / 00h00 Paris (été)
-# Tu peux ajuster l'heure si besoin. Le format est UTC.
+# Cron tous les matins à 03h00 UTC = 05h00 Paris (été) / 04h00 Paris (hiver)
+# GitHub Actions ne comprend que l'UTC, donc DST shift inévitable de ±1h.
 on:
   schedule:
-    - cron: '0 22 * * *'
+    - cron: '0 3 * * *'
   # Permet de lancer manuellement depuis l'onglet Actions
   workflow_dispatch:
     inputs:
