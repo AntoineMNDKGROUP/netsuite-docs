@@ -17,6 +17,29 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
+# Whitelist des colonnes "significatives" pour la détection de changement.
+# Le hash de detection (snapshots.content_hash) ne porte QUE sur ces colonnes,
+# pour ignorer les drifts du `raw` jsonb et autres champs cosmétiques.
+# ============================================================================
+
+SCRIPT_HASH_KEYS = (
+    "ns_internal_id",
+    "name",
+    "script_type",
+    "owner",
+    "is_inactive",
+)
+
+SCRIPT_DEPLOYMENT_HASH_KEYS = (
+    "ns_internal_id",
+    "title",
+    "status",
+    "is_deployed",
+    "log_level",
+)
+
+
+# ============================================================================
 # SCRIPTS — fallback chain
 # ============================================================================
 
@@ -98,6 +121,48 @@ def _try_variants(suiteql: SuiteQLClient, queries: list[str], limit: int | None)
     raise last_err if last_err else RuntimeError("All query variants failed")
 
 
+def _restlet_to_script_record(it: dict[str, Any]) -> dict[str, Any]:
+    """Mappe un item RESTlet (action=list_scripts) vers le format de la table
+    scripts. Format RESTlet : {internalid, scriptid, name, script_type,
+    api_version, script_file, description, is_inactive, owner_id, owner,
+    last_modified, date_created}.
+    """
+    owner_id = it.get("owner_id")
+    owner_name = it.get("owner")
+    return {
+        "ns_internal_id": str(it["internalid"]),
+        "script_id": it.get("scriptid"),
+        "name": it.get("name") or "(unnamed)",
+        "script_type": it.get("script_type"),
+        "api_version": it.get("api_version"),
+        "script_file": it.get("script_file") and str(it.get("script_file")),
+        "description": it.get("description"),
+        "is_inactive": bool(it.get("is_inactive", False)),
+        "owner": (
+            f"{owner_name} (#{owner_id})" if owner_id and owner_name
+            else (str(owner_id) if owner_id else None)
+        ),
+        "raw": it,
+    }
+
+
+def _restlet_to_deployment_record(it: dict[str, Any]) -> dict[str, Any]:
+    """Mappe un item RESTlet (action=list_script_deployments) vers le format
+    de la table script_deployments.
+    """
+    return {
+        "ns_internal_id": str(it["internalid"]),
+        "script_ns_id": str(it.get("script_internalid")) if it.get("script_internalid") else None,
+        "deployment_id": it.get("deployment_scriptid"),
+        "title": it.get("title"),
+        "status": it.get("status_text") or it.get("status"),
+        "is_deployed": bool(it.get("is_deployed", False)),
+        "log_level": it.get("log_level_text") or it.get("log_level"),
+        "context": {"record_type": it.get("record_type")} if it.get("record_type") else None,
+        "raw": it,
+    }
+
+
 def _format_since_for_suiteql(since) -> str:
     """Convertit un datetime en literal SuiteQL TO_TIMESTAMP('...', 'YYYY-MM-DD HH24:MI:SS')."""
     from datetime import datetime, timezone
@@ -116,22 +181,47 @@ def extract_scripts(
     limit: int | None = None,
     *,
     modified_since=None,
+    metadata_client=None,
 ) -> dict[str, int]:
     """Extrait les scripts.
 
-    Si `modified_since` est fourni (datetime), ne récupère que les scripts dont
-    `script.lastmodifieddate >= modified_since` côté SuiteQL. Permet de gagner
-    en perf en mode incremental. La détection des suppressions est désactivée
-    dans ce cas (la liste retournée est partielle, donc une absence n'est pas
-    une vraie suppression).
+    Si `modified_since` est fourni :
+      1. Si `metadata_client` est fourni → utilise le RESTlet `list_scripts`
+         (qui bypasse les limitations SuiteQL via N/search). Approche
+         recommandée — c'est le seul moyen fiable de filtrer par
+         lastmodifieddate sur ce record type.
+      2. Sinon → fallback SuiteQL avec WHERE en cascade de noms de colonnes.
+
+    La détection des suppressions est désactivée si modified_since (la liste
+    retournée est partielle, donc une absence n'est pas une vraie suppression).
     """
+    # ---- Mode incremental via RESTlet (recommandé) -----------------------
+    if modified_since is not None and metadata_client is not None:
+        from datetime import datetime, timezone
+        ts = modified_since
+        if isinstance(ts, str):
+            ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        since_str = ts.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        logger.info("Fetching scripts modified since %s (via RESTlet)...", since_str)
+        items = metadata_client.list_scripts_changed(since=since_str)
+        records = [_restlet_to_script_record(it) for it in items]
+        logger.info("Fetched %s scripts via RESTlet, syncing to Supabase...", len(records))
+        stats = store.bulk_sync(
+            table="scripts",
+            entity_type="script",
+            records=records,
+            run_id=run_id,
+            hash_keys=SCRIPT_HASH_KEYS,
+        )
+        logger.info("Scripts done: %s", stats)
+        return stats
+
+    # ---- Mode incremental via SuiteQL (fallback) -------------------------
     if modified_since is not None:
         ts_literal = _format_since_for_suiteql(modified_since)
-        logger.info("Fetching scripts modified since %s...", modified_since)
-        # Le nom du champ "date de dernière modif" varie selon les comptes
-        # NetSuite. On essaie plusieurs candidats en cascade ; si tous échouent,
-        # on retombe sur la query SANS filtre (full scan, bulk_sync skipera
-        # quand même via le hash).
+        logger.info("Fetching scripts modified since %s (SuiteQL fallback)...", modified_since)
         date_candidates = ["datemodified", "lastmodified", "lastmodifieddate", "lastmoddate"]
         variants = []
         for date_col in date_candidates:
@@ -139,7 +229,6 @@ def extract_scripts(
                 variants.append(
                     v.rstrip().rstrip(";") + f"\nWHERE s.{date_col} >= {ts_literal}\n"
                 )
-        # Fallback: les variantes sans filtre (au cas où aucun nom ne marche)
         variants.extend(SCRIPTS_QUERY_VARIANTS)
     else:
         logger.info("Fetching scripts from NetSuite (limit=%s)...", limit or "no limit")
@@ -153,6 +242,7 @@ def extract_scripts(
         entity_type="script",
         records=records,
         run_id=run_id,
+        hash_keys=SCRIPT_HASH_KEYS,
     )
 
     # Détection des suppressions : uniquement si la liste est exhaustive
@@ -215,11 +305,45 @@ def extract_script_deployments(
     limit: int | None = None,
     *,
     modified_since=None,
+    metadata_client=None,
 ) -> dict[str, int]:
+    # ---- Mode incremental via RESTlet (recommandé) -----------------------
+    if modified_since is not None and metadata_client is not None:
+        from datetime import datetime, timezone
+        ts = modified_since
+        if isinstance(ts, str):
+            ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        since_str = ts.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        logger.info(
+            "Fetching script deployments modified since %s (via RESTlet)...",
+            since_str,
+        )
+        items = metadata_client.list_script_deployments_changed(since=since_str)
+        records = [_restlet_to_deployment_record(it) for it in items]
+        logger.info(
+            "Fetched %s deployments via RESTlet, syncing to Supabase...",
+            len(records),
+        )
+        stats = store.bulk_sync(
+            table="script_deployments",
+            entity_type="script_deployment",
+            records=records,
+            run_id=run_id,
+            label_keys=("title", "deployment_id"),
+            hash_keys=SCRIPT_DEPLOYMENT_HASH_KEYS,
+        )
+        logger.info("Script deployments done: %s", stats)
+        return stats
+
+    # ---- Mode incremental via SuiteQL (fallback) -------------------------
     if modified_since is not None:
         ts_literal = _format_since_for_suiteql(modified_since)
-        logger.info("Fetching script deployments modified since %s...", modified_since)
-        # Idem scripts : on essaie plusieurs noms, fallback sans filtre.
+        logger.info(
+            "Fetching script deployments modified since %s (SuiteQL fallback)...",
+            modified_since,
+        )
         date_candidates = ["datemodified", "lastmodified", "lastmodifieddate", "lastmoddate"]
         variants = []
         for date_col in date_candidates:
@@ -262,6 +386,7 @@ def extract_script_deployments(
         records=records,
         run_id=run_id,
         label_keys=("title", "deployment_id"),
+        hash_keys=SCRIPT_DEPLOYMENT_HASH_KEYS,
     )
 
     if not limit and modified_since is None:

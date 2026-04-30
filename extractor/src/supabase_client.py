@@ -16,11 +16,24 @@ logger = logging.getLogger(__name__)
 CHUNK_SIZE = 500
 
 
-def _stable_hash(payload: dict[str, Any]) -> str:
-    """Hash stable d'un dict pour la détection de changements."""
-    # On exclut les champs purement temporels du hash, sinon tout change à chaque sync.
-    skipped = {"last_seen_at", "first_seen_at"}
-    cleaned = {k: v for k, v in payload.items() if k not in skipped}
+def _stable_hash(
+    payload: dict[str, Any],
+    include_keys: Iterable[str] | None = None,
+) -> str:
+    """Hash stable d'un dict pour la détection de changements.
+
+    - Si `include_keys` est fourni, le hash ne porte QUE sur ces colonnes
+      (whitelist). Utilisé pour les entités où on ne veut tracker que les
+      changements métier significatifs (ex: scripts → name, owner, etc.)
+      et ignorer le bruit du `raw` jsonb.
+    - Sinon, hash sur tout le payload sauf les colonnes purement temporelles.
+    """
+    if include_keys is not None:
+        allow = set(include_keys)
+        cleaned = {k: v for k, v in payload.items() if k in allow}
+    else:
+        skipped = {"last_seen_at", "first_seen_at"}
+        cleaned = {k: v for k, v in payload.items() if k not in skipped}
     canonical = json.dumps(cleaned, sort_keys=True, default=str, ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -143,6 +156,7 @@ class SupabaseStore:
         records: list[dict[str, Any]],
         run_id: str,
         label_keys: tuple[str, ...] = ("name", "title", "label"),
+        hash_keys: tuple[str, ...] | None = None,
     ) -> dict[str, int]:
         """Sync un ensemble d'entités en mode batch.
 
@@ -168,7 +182,10 @@ class SupabaseStore:
             ).execute()
 
         # 2. Calcul des hashes locaux
-        hashes = {r["ns_internal_id"]: _stable_hash(r) for r in records}
+        hashes = {
+            r["ns_internal_id"]: _stable_hash(r, include_keys=hash_keys)
+            for r in records
+        }
         ns_ids = list(hashes.keys())
 
         # 3. Fetch snapshots existantes (par chunks pour limiter la taille de l'URL)
