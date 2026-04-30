@@ -81,35 +81,59 @@ def _select_candidates(store: SupabaseStore, force_all: bool = False) -> list[di
     - On récupère TOUTES les docs existantes (en parallèle).
     - On filtre côté Python : besoin de doc si pas de doc, ou si SHA changé et pas published.
     """
-    # Tous les scripts avec un fichier source
-    scripts_res = (
-        store.client.table("scripts")
-        .select("ns_internal_id,script_id,name,script_type,api_version,is_inactive")
-        .eq("is_inactive", False)
-        .execute()
-    )
-    all_scripts = {s["ns_internal_id"]: s for s in scripts_res.data or []}
+    # Tous les scripts avec un fichier source (paginé pour contourner la limite Supabase)
+    all_scripts: dict[str, dict[str, Any]] = {}
+    offset = 0
+    PAGE = 1000
+    while True:
+        scripts_res = (
+            store.client.table("scripts")
+            .select("ns_internal_id,script_id,name,script_type,api_version,is_inactive")
+            .eq("is_inactive", False)
+            .range(offset, offset + PAGE - 1)
+            .execute()
+        )
+        batch = scripts_res.data or []
+        for s in batch:
+            all_scripts[s["ns_internal_id"]] = s
+        if len(batch) < PAGE:
+            break
+        offset += PAGE
 
-    # Tous les fichiers source (avec leur SHA et leur lien script_ns_id)
-    files_res = (
-        store.client.table("script_source_files")
-        .select("script_ns_id,file_name,content,jsdoc,content_sha256")
-        .not_.is_("script_ns_id", "null")
-        .execute()
-    )
+    # Tous les fichiers source (paginé — contient le code donc lourd)
     files_by_script: dict[str, dict[str, Any]] = {}
-    for f in files_res.data or []:
-        files_by_script[f["script_ns_id"]] = f
+    offset = 0
+    while True:
+        files_res = (
+            store.client.table("script_source_files")
+            .select("script_ns_id,file_name,content,jsdoc,content_sha256")
+            .not_.is_("script_ns_id", "null")
+            .range(offset, offset + PAGE - 1)
+            .execute()
+        )
+        batch = files_res.data or []
+        for f in batch:
+            files_by_script[f["script_ns_id"]] = f
+        if len(batch) < PAGE:
+            break
+        offset += PAGE
 
-    # Toutes les docs existantes
-    docs_res = (
-        store.client.table("script_docs")
-        .select("script_ns_id,status,ai_generated,source_sha256_at_generation")
-        .execute()
-    )
+    # Toutes les docs existantes (paginé)
     docs_by_script: dict[str, dict[str, Any]] = {}
-    for d in docs_res.data or []:
-        docs_by_script[d["script_ns_id"]] = d
+    offset = 0
+    while True:
+        docs_res = (
+            store.client.table("script_docs")
+            .select("script_ns_id,status,ai_generated,source_sha256_at_generation")
+            .range(offset, offset + PAGE - 1)
+            .execute()
+        )
+        batch = docs_res.data or []
+        for d in batch:
+            docs_by_script[d["script_ns_id"]] = d
+        if len(batch) < PAGE:
+            break
+        offset += PAGE
 
     # Filtre : pour chaque script avec un fichier, doit-on (re)générer ?
     candidates = []
